@@ -1,0 +1,129 @@
+Option Explicit
+
+Sub DownloadHistoricalData()
+    Dim ws As Worksheet
+    Dim row As Long
+    Dim ticker As String
+    Dim savePath As String
+    Dim outputPath As String
+    Dim outputWorkbook As Workbook
+    Dim outputSheet As Worksheet
+    Dim frequency As String
+    Dim datafield As String
+    Dim templatePath As String
+    Dim templateWorkbook As Workbook
+    
+    Set ws = ThisWorkbook.Sheets(1)
+    row = 1
+    savePath = ThisWorkbook.Path & "\Data\" ' Change this to your desired folder path
+    datafield = ws.Cells(3, 4).Value
+    frequency = ws.Cells(4, 4).Value
+    templatePath = ThisWorkbook.Path & "\Template_Data.xlsx" ' Path to the template file
+    
+    Set templateWorkbook = Workbooks.Open(templatePath)
+    Set outputSheet = templateWorkbook.Sheets(1)
+    
+    ' Loop through each row  until an empty cell is found
+    Do While ws.Cells(row, 1).Value <> ""
+        ticker = ws.Cells(row, 1).Value
+        
+        ' Add headers
+        outputSheet.Cells(1, 1).Value = "Date"
+        outputSheet.Cells(1, 2).Value = datafield
+        
+        ' Fetch and store the historical data for the ticker
+        FetchAndStoreData ticker, datafield, frequency, outputSheet
+        
+        ' Save wb with the ticker name
+        Application.DisplayAlerts = False
+        outputPath = savePath & ticker & ".xlsx"
+        templateWorkbook.SaveAs Filename:=outputPath
+        Application.DisplayAlerts = True
+        
+        outputSheet.Cells.ClearContents
+        
+        row = row + 1
+    Loop
+    
+    templateWorkbook.Close SaveChanges:=False ' Close the template workbook without saving changes
+    
+    MsgBox "Téléchargement terminé", vbSystemModal
+    
+End Sub
+
+Sub FetchAndStoreData(ticker As String, datafield As String, frequency As String, outputSheet As Worksheet)
+    Dim session As blpapicomLib2.session
+    Dim refdataservice As blpapicomLib2.Service
+    Dim req As blpapicomLib2.Request
+    Dim cid As blpapicomLib2.CorrelationId
+    Dim startDate As String
+    Dim endDate As String
+    
+    startDate = Format(ThisWorkbook.Sheets("Download").Range("D2").Value, "yyyymmdd")
+    endDate = Format(Date, "yyyymmdd")
+    
+    ' Initialize Bloomberg session
+    Set session = New blpapicomLib2.session
+    session.QueueEvents = True
+    session.Start
+    session.OpenService "//blp/refdata"
+    Set refdataservice = session.GetService("//blp/refdata")
+    
+    ' Create request for historical data
+    Set req = refdataservice.CreateRequest("HistoricalDataRequest")
+    req.GetElement("securities").AppendValue ticker
+    req.GetElement("fields").AppendValue datafield
+    req.Set "periodicitySelection", frequency
+    req.Set "startDate", startDate
+    req.Set "endDate", endDate
+    
+    ' Send request
+    Set cid = session.SendRequest(req)
+    
+    ' Process
+    ProcessResponse session, outputSheet
+    
+    ' Terminate Bloomberg session
+    session.Stop
+    Set session = Nothing
+    
+End Sub
+
+Sub ProcessResponse(session As blpapicomLib2.session, outputSheet As Worksheet)
+    Dim eventObj As blpapicomLib2.Event
+    Dim it As blpapicomLib2.MessageIterator
+    Dim msg As blpapicomLib2.Message
+    Dim securityData As blpapicomLib2.Element
+    Dim fieldData As blpapicomLib2.Element
+    Dim currentRow As Long
+    
+    currentRow = 2 ' Start writing data from the second row
+    
+    Do
+        Set eventObj = session.NextEvent()
+        
+        If eventObj.EventType = PARTIAL_RESPONSE Or eventObj.EventType = RESPONSE Then
+            Set it = eventObj.CreateMessageIterator()
+            
+            Do While it.Next()
+                Set msg = it.Message
+                Set securityData = msg.GetElement("securityData")
+                Set fieldData = securityData.GetElement("fieldData")
+                
+                Dim b As Integer
+                
+                For b = 0 To fieldData.NumValues - 1
+                    Dim fields As blpapicomLib2.Element
+                    Set fields = fieldData.GetValue(b)
+                    
+                    ' Write date and specified data field directly to the sheet
+                    outputSheet.Cells(currentRow, 1).Value = fields.GetElement("date").Value
+                    outputSheet.Cells(currentRow, 2).Value = fields.GetElement("PX_LAST").Value
+                    
+                    currentRow = currentRow + 1
+                Next b
+            Loop
+        End If
+    Loop While eventObj.EventType <> RESPONSE
+End Sub
+
